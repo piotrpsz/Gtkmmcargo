@@ -10,10 +10,8 @@ func main() {
 	b := builder.New("/home/piotr/Projects/Gtkmm/Test/")
 	b.AddFile("test.cc")
 	//builder.PrintGtkmmFlags()
-	b.Compile()
-	ok, outString, errString := b.Link("testapp")
+	ok := b.Build("testapp", true)
 	if !ok {
-		fmt.Println("Out:", outString)
-		fmt.Println("Err:", errString)
+		fmt.Println("failed")
 	}
 }

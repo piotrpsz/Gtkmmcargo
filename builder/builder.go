@@ -8,9 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"Gtkmmcargo/shared"
-	"Gtkmmcargo/tr"
 )
 
 var (
@@ -24,6 +24,7 @@ type Builder struct {
 	files      []string
 	objects    []string
 	extObjects []string
+	exeParams  []string
 }
 
 func init() {
@@ -54,28 +55,86 @@ func (b *Builder) PrintFilesToCompile() {
 func (b *Builder) PrintGtkmmFlags() {
 	display("gtkmm builder flags", gtkmmCompilerFlags)
 	display("gtkmm linker flags", gtkmmLinkerFlags)
-
 }
 
-// g++ test.o -o test `pkg-config gtkmm-3.0 --libs`
-func (b *Builder) Link(binName string) (bool, string, string) {
-	var outBuffer, errBuffer bytes.Buffer
+func (b *Builder) Build(binName string, run bool) bool {
+	t := time.Now()
+	if b.compile() {
+		binPath := filepath.Join(b.projectDir, binName)
+		if b.link(binPath) {
+			elapsed := time.Since(t).Seconds()
+			fmt.Printf("OK. Duration: %v sec.\n", elapsed)
+			if run {
+				b.runBin(binPath)
+			}
+			return true
+		}
+	}
+	return false
+}
 
-	binPath := filepath.Join(b.projectDir, binName)
+func (b *Builder) runBin(binPath string) {
+	fmt.Println(binPath)
+	/*
+		attr := os.ProcAttr{
+			Dir:".",
+			Env:os.Environ(),
+			Files: []*os.File {
+				os.Stdin,
+				os.Stdout,
+				os.Stderr,
+			},
+			Sys:&syscall.SysProcAttr{
+					Foreground:false,
+			},
+		}
 
-	var params []string
+		process, err := os.StartProcess(binPath, []string{binPath}, &attr)
+		if err == nil {
+			//process.Wait()
+			if err := process.Release(); err != nil {
+				fmt.Println(err)
+			}
+			return
+		}
+		fmt.Println(err)
+	*/
+
+	cmd := exec.Command(binPath, b.exeParams...)
+	if err := cmd.Start(); err != nil {
+		fmt.Println(err)
+		return
+	}
+	_ = cmd.Process.Release()
+}
+
+func (b *Builder) link(binPath string) bool {
+	var (
+		errBuffer bytes.Buffer
+		params    []string
+	)
 	params = append(params, b.objects...)
+	params = append(params, b.extObjects...)
 	params = append(params, "-o", binPath)
 	params = append(params, gtkmmLinkerFlags...)
 	cmd := exec.Command("g++", params...)
-	cmd.Stdout = &outBuffer
 	cmd.Stderr = &errBuffer
-	if err := cmd.Run(); tr.IsOK(err) {
-		return true, outBuffer.String(), errBuffer.String()
+
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println(err)
+		return false
 	}
-	return false, outBuffer.String(), errBuffer.String()
+
+	output := strings.TrimSpace(errBuffer.String())
+	if len(output) > 0 {
+		fmt.Println(output)
+		return false
+	}
+	return true
 }
-func (b *Builder) Compile() bool {
+
+func (b *Builder) compile() bool {
 	for _, src := range b.files {
 		if _, name := shared.PathComponents(src); name != "" {
 			if base, ext := shared.NameComponent(name); validExt(ext) {
@@ -91,43 +150,56 @@ func (b *Builder) Compile() bool {
 	return true
 }
 
-// g++ -c test.cc -o test.o `pkg-config gtkmm-3.0 --cflags`
 func compileFile(src, dst string) bool {
 	var errBuffer bytes.Buffer
+
 	params := []string{"-c", src, "-o", dst}
 	params = append(params, gtkmmCompilerFlags...)
 	cmd := exec.Command("g++", params...)
 	cmd.Stderr = &errBuffer
-	if err := cmd.Run(); tr.IsOK(err) {
-		return true
+
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println(err)
+		return false
 	}
-	fmt.Println(errBuffer.String())
-	return false
+
+	output := strings.TrimSpace(errBuffer.String())
+	if len(output) > 0 {
+		fmt.Println(output)
+		return false
+	}
+	return true
 }
 
 func fetchGtkmmCompilerFlags() {
 	var outBuffer bytes.Buffer
 	cmd := exec.Command("pkg-config", "gtkmm-3.0", "glib-2.0", "--cflags")
 	cmd.Stdout = &outBuffer
-	err := cmd.Run()
-	if err != nil {
+
+	if err := cmd.Run(); err != nil {
 		log.Println(err)
 		return
 	}
-	result := strings.TrimSpace(outBuffer.String())
-	gtkmmCompilerFlags = strings.Split(result, " ")
+
+	if result := strings.TrimSpace(outBuffer.String()); result != "" {
+		gtkmmCompilerFlags = strings.Split(result, " ")
+	}
 }
 
 func fetchGtkmmLinkerFlags() {
 	var outBuffer bytes.Buffer
 	cmd := exec.Command("pkg-config", "gtkmm-3.0", "--libs")
 	cmd.Stdout = &outBuffer
-	err := cmd.Run()
-	if err != nil {
+
+	if err := cmd.Run(); err != nil {
 		log.Println(err)
+		return
 	}
-	result := strings.TrimSpace(outBuffer.String())
-	gtkmmLinkerFlags = strings.Split(result, " ")
+
+	if result := strings.TrimSpace(outBuffer.String()); result != "" {
+		gtkmmLinkerFlags = strings.Split(result, " ")
+	}
 }
 
 func display(name string, values []string) {
