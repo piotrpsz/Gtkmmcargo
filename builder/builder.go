@@ -21,10 +21,13 @@ var (
 type Builder struct {
 	projectDir string // Path of root project directory (must be finished with /)
 	workingDir string
-	files      []string
-	objects    []string
-	extObjects []string
-	exeParams  []string
+
+	files []string
+
+	customCompileFlags []string // custom compile flags
+	customLinkFlags    []string // custom link flags (to link additional libraries, e.g. SQLite)
+	extObjects         []string // external object files for linking
+	objects            []string // objects generated during compilation
 }
 
 func init() {
@@ -57,55 +60,17 @@ func (b *Builder) PrintGtkmmFlags() {
 	display("gtkmm linker flags", gtkmmLinkerFlags)
 }
 
-func (b *Builder) Build(binName string, run bool) bool {
+func (b *Builder) Build(binName string) bool {
 	t := time.Now()
 	if b.compile() {
 		binPath := filepath.Join(b.projectDir, binName)
 		if b.link(binPath) {
 			elapsed := time.Since(t).Seconds()
 			fmt.Printf("OK. Duration: %v sec.\n", elapsed)
-			if run {
-				b.runBin(binPath)
-			}
 			return true
 		}
 	}
 	return false
-}
-
-func (b *Builder) runBin(binPath string) {
-	fmt.Println(binPath)
-	/*
-		attr := os.ProcAttr{
-			Dir:".",
-			Env:os.Environ(),
-			Files: []*os.File {
-				os.Stdin,
-				os.Stdout,
-				os.Stderr,
-			},
-			Sys:&syscall.SysProcAttr{
-					Foreground:false,
-			},
-		}
-
-		process, err := os.StartProcess(binPath, []string{binPath}, &attr)
-		if err == nil {
-			//process.Wait()
-			if err := process.Release(); err != nil {
-				fmt.Println(err)
-			}
-			return
-		}
-		fmt.Println(err)
-	*/
-
-	cmd := exec.Command(binPath, b.exeParams...)
-	if err := cmd.Start(); err != nil {
-		fmt.Println(err)
-		return
-	}
-	_ = cmd.Process.Release()
 }
 
 func (b *Builder) link(binPath string) bool {
@@ -117,6 +82,7 @@ func (b *Builder) link(binPath string) bool {
 	params = append(params, b.extObjects...)
 	params = append(params, "-o", binPath)
 	params = append(params, gtkmmLinkerFlags...)
+	params = append(params, b.customLinkFlags...)
 	cmd := exec.Command("g++", params...)
 	cmd.Stderr = &errBuffer
 
@@ -139,7 +105,7 @@ func (b *Builder) compile() bool {
 		if _, name := shared.PathComponents(src); name != "" {
 			if base, ext := shared.NameComponent(name); validExt(ext) {
 				dst := b.workingDir + string(os.PathSeparator) + base + ".o"
-				ok := compileFile(src, dst)
+				ok := b.compileFile(src, dst)
 				if !ok {
 					return false
 				}
@@ -150,11 +116,12 @@ func (b *Builder) compile() bool {
 	return true
 }
 
-func compileFile(src, dst string) bool {
+func (b *Builder) compileFile(src, dst string) bool {
 	var errBuffer bytes.Buffer
 
 	params := []string{"-c", src, "-o", dst}
 	params = append(params, gtkmmCompilerFlags...)
+	params = append(params, b.customCompileFlags...)
 	cmd := exec.Command("g++", params...)
 	cmd.Stderr = &errBuffer
 
