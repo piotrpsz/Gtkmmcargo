@@ -152,20 +152,12 @@ func (b *Builder) link(binPath string) bool {
 
 	err := cmd.Run()
 	if err != nil {
+		printMessages(errBuffer.String())
 		fmt.Println(err)
 		return false
 	}
 
-	stdOutput := strings.TrimSpace(outBuffer.String())
-	if len(stdOutput) > 0 {
-		fmt.Println(stdOutput)
-	}
-
-	errOutput := strings.TrimSpace(errBuffer.String())
-	if len(errOutput) > 0 {
-		fmt.Println(errOutput)
-		return false
-	}
+	printMessages(outBuffer.String())
 	return true
 }
 
@@ -207,25 +199,26 @@ func (b *Builder) compileFile(wg *sync.WaitGroup, src, dst string) {
 
 	err := cmd.Run()
 	if err != nil {
+		printMessages(errBuffer.String())
 		fmt.Println(err)
 		return
 	}
 
-	stdOutput := strings.TrimSpace(outBuffer.String())
-	if len(stdOutput) > 0 {
-		fmt.Println(stdOutput)
-	}
-
-	errOutput := strings.TrimSpace(errBuffer.String())
-	if len(errOutput) > 0 {
-		fmt.Println(errOutput)
-		return
-	}
+	printMessages(outBuffer.String())
 
 	b.objMutex.Lock()
 	defer b.objMutex.Unlock()
 	b.objects = append(b.objects, dst)
 	return
+}
+
+func printMessages(msg string) bool {
+	output := strings.TrimSpace(msg)
+	if len(output) > 0 {
+		fmt.Println(output)
+		return true
+	}
+	return false
 }
 
 func fetchGtkmmCompilerFlags() {
