@@ -2,15 +2,23 @@ package builder
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"Gtkmmcargo/shared"
+	"Gtkmmcargo/tr"
+)
+
+const (
+	DefaultConfigFileName   = "gtkmmcargo.cfg"
+	DefaultWorkingDirectory = ".gtkmmcargo"
 )
 
 var (
@@ -19,15 +27,16 @@ var (
 )
 
 type Builder struct {
-	projectDir string // Path of root project directory (must be finished with /)
-	workingDir string
-
-	files []string
-
-	customCompileFlags []string // custom compile flags
-	customLinkFlags    []string // custom link flags (to link additional libraries, e.g. SQLite)
-	extObjects         []string // external object files for linking
-	objects            []string // objects generated during compilation
+	ProjectDirectory   string   `json:"project_directory"`
+	WorkingDirectory   string   `json:"working_directory"`
+	ExecutableName     string   `json:"executable_name"`
+	SourceFiles        []string `json:"source_files"`
+	CustomCompileFlags []string `json:"custom_compile_flags"`
+	CustomLinkFlags    []string `json:"custom_link_flags"`
+	ExternalObjects    []string `json:"external_object_files"`
+	objects            []string
+	cfgFilePath        string
+	objMutex           sync.Mutex
 }
 
 func init() {
@@ -35,55 +44,110 @@ func init() {
 	fetchGtkmmLinkerFlags()
 }
 
-func New(projectDir string) *Builder {
-	if gtkmmCompilerFlags != nil {
-		if gtkmmLinkerFlags != nil {
-			workingDir := filepath.Join(projectDir, ".gtkmmcargo")
-			if shared.CreateDirIfNeeded(workingDir) {
-				return &Builder{projectDir: projectDir, workingDir: workingDir}
+func New(cfgFilePath string) *Builder {
+	if cfgFilePath == "" {
+		cfgFilePath = DefaultConfigFileName
+	}
+	if data := readConfig(cfgFilePath); len(data) > 0 {
+		if b := parseConfigData(data); b != nil {
+			if b.WorkingDirectory == "" {
+				b.WorkingDirectory = filepath.Join(b.ProjectDirectory, DefaultWorkingDirectory)
+			} else {
+				// absolute path
+				if b.WorkingDirectory[0] == '/' {
+					// it is OK
+				} else {
+					b.WorkingDirectory = filepath.Join(b.ProjectDirectory, b.WorkingDirectory)
+				}
 			}
+			shared.CreateDirIfNeeded(b.WorkingDirectory)
+
+			return b
 		}
 	}
 	return nil
 }
 
-func (b *Builder) AddFile(fname string) {
-	b.files = append(b.files, filepath.Join(b.projectDir, fname))
+func NewEmpty() *Builder {
+	return &Builder{
+		ProjectDirectory:   "",
+		WorkingDirectory:   "",
+		ExecutableName:     "",
+		SourceFiles:        []string{},
+		CustomCompileFlags: []string{"-Wall", "-std=c++17", "-O3"},
+		CustomLinkFlags:    []string{},
+		ExternalObjects:    []string{},
+	}
 }
 
-func (b *Builder) PrintFilesToCompile() {
-	print("files to compile", b.files)
+func readConfig(fpath string) []byte {
+	if handle := shared.OpenFile(fpath); handle != nil {
+		defer handle.Close()
+
+		if data := shared.ReadFileContent(handle); data != nil {
+			return data
+		}
+	}
+	return nil
 }
 
-func (b *Builder) PrintGtkmmFlags() {
-	display("gtkmm builder flags", gtkmmCompilerFlags)
-	display("gtkmm linker flags", gtkmmLinkerFlags)
+func parseConfigData(data []byte) *Builder {
+	var b Builder
+
+	if err := json.Unmarshal(data, &b); tr.IsOK(err) {
+		return &b
+	}
+	return nil
 }
 
-func (b *Builder) Build(binName string) bool {
-	t := time.Now()
-	if b.compile() {
-		binPath := filepath.Join(b.projectDir, binName)
-		if b.link(binPath) {
-			elapsed := time.Since(t).Seconds()
-			fmt.Printf("OK. Duration: %v sec.\n", elapsed)
+func (b *Builder) Save() bool {
+	if data, err := json.MarshalIndent(b, "", "   "); tr.IsOK(err) {
+		data = append(data, '\n')
+		if shared.OverwriteFileContent(b.cfgFilePath, data) {
 			return true
 		}
 	}
 	return false
 }
 
+func (b *Builder) PrintFilesToCompile() {
+	print("files to compile", b.SourceFiles)
+}
+
+func PrintGtkmmFlags() {
+	display("gtkmm builder flags", gtkmmCompilerFlags)
+	display("gtkmm linker flags", gtkmmLinkerFlags)
+}
+
+func (b *Builder) Build() bool {
+	t := time.Now()
+	if b.compile() {
+		binPath := filepath.Join(b.ProjectDirectory, b.ExecutableName)
+		if b.link(binPath) {
+			elapsed := time.Since(t).Seconds()
+			fmt.Printf("OK. Duration: %v sec.\n", elapsed)
+			return true
+		} else {
+			fmt.Println("Linking failure")
+		}
+	} else {
+		fmt.Println("Compilation failure")
+	}
+	return false
+}
+
 func (b *Builder) link(binPath string) bool {
 	var (
-		errBuffer bytes.Buffer
-		params    []string
+		outBuffer, errBuffer bytes.Buffer
+		params               []string
 	)
 	params = append(params, b.objects...)
-	params = append(params, b.extObjects...)
+	params = append(params, b.ExternalObjects...)
 	params = append(params, "-o", binPath)
 	params = append(params, gtkmmLinkerFlags...)
-	params = append(params, b.customLinkFlags...)
+	params = append(params, b.CustomLinkFlags...)
 	cmd := exec.Command("g++", params...)
+	cmd.Stdout = &outBuffer
 	cmd.Stderr = &errBuffer
 
 	err := cmd.Run()
@@ -92,51 +156,76 @@ func (b *Builder) link(binPath string) bool {
 		return false
 	}
 
-	output := strings.TrimSpace(errBuffer.String())
-	if len(output) > 0 {
-		fmt.Println(output)
+	stdOutput := strings.TrimSpace(outBuffer.String())
+	if len(stdOutput) > 0 {
+		fmt.Println(stdOutput)
+	}
+
+	errOutput := strings.TrimSpace(errBuffer.String())
+	if len(errOutput) > 0 {
+		fmt.Println(errOutput)
 		return false
 	}
 	return true
 }
 
 func (b *Builder) compile() bool {
-	for _, src := range b.files {
+	var wg sync.WaitGroup
+
+	for _, src := range b.SourceFiles {
 		if _, name := shared.PathComponents(src); name != "" {
 			if base, ext := shared.NameComponent(name); validExt(ext) {
-				dst := b.workingDir + string(os.PathSeparator) + base + ".o"
-				ok := b.compileFile(src, dst)
-				if !ok {
-					return false
-				}
-				b.objects = append(b.objects, dst)
+				dst := b.WorkingDirectory + string(os.PathSeparator) + base + ".o"
+				wg.Add(1)
+				go b.compileFile(&wg, src, dst)
 			}
 		}
 	}
-	return true
+
+	wg.Wait()
+	return len(b.SourceFiles) == len(b.objects)
 }
 
-func (b *Builder) compileFile(src, dst string) bool {
-	var errBuffer bytes.Buffer
+func (b *Builder) compileFile(wg *sync.WaitGroup, src, dst string) {
+	defer wg.Done()
+
+	var outBuffer, errBuffer bytes.Buffer
+
+	src = filepath.Join(b.ProjectDirectory, src)
+	if !shared.ExistsFile(src) {
+		fmt.Printf("File not exists (%s)\n", src)
+		return
+	}
 
 	params := []string{"-c", src, "-o", dst}
+	params = append(params, b.CustomCompileFlags...)
 	params = append(params, gtkmmCompilerFlags...)
-	params = append(params, b.customCompileFlags...)
+	//fmt.Println(params)
 	cmd := exec.Command("g++", params...)
+	cmd.Stdout = &outBuffer
 	cmd.Stderr = &errBuffer
 
 	err := cmd.Run()
 	if err != nil {
 		fmt.Println(err)
-		return false
+		return
 	}
 
-	output := strings.TrimSpace(errBuffer.String())
-	if len(output) > 0 {
-		fmt.Println(output)
-		return false
+	stdOutput := strings.TrimSpace(outBuffer.String())
+	if len(stdOutput) > 0 {
+		fmt.Println(stdOutput)
 	}
-	return true
+
+	errOutput := strings.TrimSpace(errBuffer.String())
+	if len(errOutput) > 0 {
+		fmt.Println(errOutput)
+		return
+	}
+
+	b.objMutex.Lock()
+	defer b.objMutex.Unlock()
+	b.objects = append(b.objects, dst)
+	return
 }
 
 func fetchGtkmmCompilerFlags() {

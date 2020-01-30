@@ -1,11 +1,28 @@
 package shared
 
 import (
+	"io/ioutil"
 	"log"
 	"os"
 
 	"Gtkmmcargo/tr"
 )
+
+func ExistsFile(dirPath string) bool {
+	var err error
+	var fi os.FileInfo
+
+	if fi, err = os.Stat(dirPath); err != nil {
+		if !os.IsNotExist(err) {
+			log.Println(err)
+		}
+		return false
+	}
+	if !fi.IsDir() && fi.Mode().IsRegular() {
+		return true
+	}
+	return false
+}
 
 func ExistsDir(dirPath string) bool {
 	var err error
@@ -29,6 +46,41 @@ func CreateDirIfNeeded(dirPath string) bool {
 	}
 	if err := os.MkdirAll(dirPath, os.ModePerm); tr.IsOK(err) {
 		return true
+	}
+	return false
+}
+
+func CreateFile(fpath string) *os.File {
+	if fhandle, err := os.Create(fpath); tr.IsOK(err) {
+		return fhandle
+	}
+	return nil
+}
+
+func OpenFile(fpath string) *os.File {
+	if fhandle, err := os.Open(fpath); tr.IsOK(err) {
+		return fhandle
+	}
+	return nil
+}
+
+func ReadFileContent(fhandle *os.File) []byte {
+	if data, err := ioutil.ReadAll(fhandle); tr.IsOK(err) {
+		return data
+	}
+	return nil
+}
+
+func OverwriteFileContent(fpath string, data []byte) bool {
+	if ExistsFile(fpath) && !RemoveFile(fpath) {
+		return false
+	}
+	if fhandle := CreateFile(fpath); fhandle != nil {
+		defer fhandle.Close()
+
+		if _, err := fhandle.Write(data); tr.IsOK(err) {
+			return true
+		}
 	}
 	return false
 }
